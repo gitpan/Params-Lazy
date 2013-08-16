@@ -16,7 +16,7 @@ our @ISA       = qw(Exporter);
 our @EXPORT    = "force";
 our @EXPORT_OK = "force";
 
-our $VERSION = '0.001';
+our $VERSION = '0.002';
 
 require XSLoader;
 XSLoader::load('Params::Lazy', $VERSION);
@@ -70,7 +70,7 @@ Params::Lazy - Transparent lazy arguments for subroutines.
 
 =head1 VERSION
 
-Version 0.001
+Version 0.002
 
 =head1 SYNOPSIS
 
@@ -175,9 +175,9 @@ the program.
 
 =item *
 
-Finally, delayed arguments, although intended to be faster & more light
-weight than coderefs, are currently about twice as slow as passing
-a coderef and dereferencing it, so beware!
+Finally, delayed arguments, although intended to be faster & more 
+lightweight than coderefs, are currently between 5% and 100% B<slower>
+than passing a coderef and dereferencing it, so beware!
 
 =back
 

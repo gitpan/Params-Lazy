@@ -54,6 +54,23 @@ sub run {
 
 use Params::Lazy run => '^;@', stress_test => '^;@';
 
+my @range = run("a".."z");
+is_deeply(\@range, ["a".."z"], "can delay a range");
+
+() = @::empty;
+my @result = run(@::empty);
+is_deeply(\@result, [], "delaying an empty array doesn't return a glob");
+
+TODO: {
+    local $TODO = "delay wantarray should return true";
+    my ($wantarray) = run wantarray;
+    ok($wantarray, "delayed wantarray is run in list context");
+}
+
+sub wantfunc { wantarray }
+my ($wantarray) = run wantfunc();
+ok($wantarray, "delayed subs are run in list context");
+
 {
     my $w = "";
     local $SIG{__WARN__} = sub { $w .= shift };
@@ -143,6 +160,7 @@ sub takes_delayed {
     force($d);
     sub { force($d) }->();
     if ( $] >= 5.010 ) {
+        no if $] >= 5.018, warnings => "experimental::lexical_topic";
         eval q{ my    $_ = 4; force($d) };
         eval q{ use feature 'state'; state $_ = 5; force($d) };
     }

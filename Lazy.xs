@@ -122,14 +122,26 @@ replace_with_delayed(pTHX_ OP* aop) {
      */
     kid->op_sibling = 0;
 
+    /* Make GIMME in the deferred op be OPf_WANT_LIST */
+    Perl_list(aTHX_ kid);
+    
     listop = newLISTOP(OP_LIST, 0, kid, (OP*)NULL);
     LINKLIST(listop);
 
     /* Stop it from looping */
     cUNOPx(kid)->op_next = (OP*)NULL;
 
-    /* Make GIMME in the deferred op be OPf_WANT_LIST */
-    Perl_list(aTHX_ listop);
+    /* XXX TODO: Calling this twice, once before the LINKLIST
+     * and once after, solves a bug; namely, that "delay 1..10"
+     * would fail an assertion, because calling list() on an
+     * OP_LIST would call lintkids(), which in turn calls
+     * gen_constant_list for this sort of expression, and
+     * without the first list(), it confuses the range
+     * with a flip-flop.
+     * Obviously this is suboptimal and probably works by sheer
+     * luck, so, FIXME
+     */
+    Perl_list(aTHX_ listop);   
     
     ctx->delayed = (OP*)listop;
 
@@ -190,30 +202,26 @@ THX_ck_entersub_args_delay(pTHX_ OP *entersubop, GV *namegv, SV *ckobj)
     return ck_entersub_args_proto(entersubop, namegv, proto);
 }
 
-MODULE = Params::Lazy		PACKAGE = Params::Lazy		
-
-void
-cv_set_call_checker_delay(CV *cv, SV *proto)
-CODE:
-    cv_set_call_checker(cv, THX_ck_entersub_args_delay, proto);
-
-void
-force(SV *sv)
-PREINIT:
+STATIC void
+S_do_force(pTHX)
+{
+    dSP;
+    dJMPENV;
+    SV *sv = POPs;
     delay_ctx *ctx;
     const I32 gimme = GIMME_V;
     I32 i, oldscope;
 #ifndef GOT_CUR_TOP_ENV
     JMPENV *cur_top_env;
 #endif
+#ifdef CXp_MULTICALL
+    PERL_CONTEXT *cx;
+#endif
     IV retvals, before;
     int ret = 0;
     /* PL_curstack and PL_stack_sp in the delayed OPs */
     AV *delayed_curstack;
     SV **delayed_sp;
-PPCODE:
-    dSP;
-    dJMPENV;
 
     if ( SvROK(sv) && SvMAGICAL(SvRV(sv)) ) {
         ctx  = (void *)SvMAGIC(SvRV(sv))->mg_ptr;
@@ -247,6 +255,19 @@ PPCODE:
 #ifndef GOT_CUR_TOP_ENV
     cur_top_env = PL_top_env;
 #endif
+    
+    /* Disallow "delay goto &sub" and similar
+     * This is required because of a possible regression in
+     * perls 5.18 and newer, which caused this to segfault
+     * because it wouldn't recognize it as outside of a sub.
+     * "Possible" because it's more likely that it was never
+     * supposed to work.
+     */
+#ifdef CXp_MULTICALL
+    cx = &cxstack[cxstack_ix];
+    cx->cx_type |= CXp_MULTICALL;
+#endif
+
     JMPENV_PUSH(ret);
 
     switch (ret) {
@@ -315,21 +336,27 @@ PPCODE:
     (void)POPMARK;
     POPSTACK;
     
-    SPAGAIN;
-    
-    PUSHMARK(SP);
-    
-    (void)POPs;
-
     if ( retvals && gimme != G_VOID ) {
-        EXTEND(SP, retvals);
+        EXTEND(PL_stack_sp, retvals);
         
         for (i = retvals; i-- > before;) {
-            mPUSHs(*(delayed_sp-i));
+            *++PL_stack_sp = sv_2mortal(*(delayed_sp-i));
         }
         SvREFCNT_dec(delayed_curstack);
     }
     
-    (void)POPMARK;
+}
 
+MODULE = Params::Lazy		PACKAGE = Params::Lazy		
+
+void
+cv_set_call_checker_delay(CV *cv, SV *proto)
+CODE:
+    cv_set_call_checker(cv, THX_ck_entersub_args_delay, proto);
+
+void
+force(sv)
+PPCODE:
+    S_do_force(aTHX);
+    SP = PL_stack_sp;
     

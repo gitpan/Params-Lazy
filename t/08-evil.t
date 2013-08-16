@@ -14,11 +14,24 @@ sub lazy_run {
 use Params::Lazy lazy_run => '^$;$';
 
 sub empty {}
+sub noreturn { 1 }
+sub withreturn { return 1 }
+
+my $cant_goto = qr/\QCan't goto subroutine \E(?:\Qfrom a sort sub (or similar callback)\E|outside a subroutine)/;  #'
+lazy_run goto &empty, $cant_goto, "a delayed goto &emptysub dies";
+lazy_run goto &noreturn, $cant_goto, "delayed goto &noexplicitreturn dies";
+lazy_run goto &withreturn, $cant_goto, "delayed goto &explicitreturn dies";
+    
+sub {
+    lazy_run goto &empty, $cant_goto, "inside a sub, a delayed goto &emptysub dies";
+    lazy_run goto &noreturn, $cant_goto, "inside a sub, delayed goto &noexplicitreturn dies";
+    lazy_run goto &withreturn, $cant_goto, "inside a sub, delayed goto &explicitreturn dies";
+}->();
 
 lazy_run return, qr/\QCan't return outside a subroutine/, "a delayed return dies";
 FOO: { lazy_run last FOO, qr/\QLabel not found for "last FOO"/, "a delayed last dies" };
 FOO: { lazy_run goto FOO, qr/\QCan't find label FOO/, "a delayed goto LABEL dies" };
-lazy_run goto &empty, qr/\QCan't goto subroutine outside a subroutine/, "a delayed goto &sub dies"; #'
+
 
 sub modify_params_list {
     my ($delay) = @_;

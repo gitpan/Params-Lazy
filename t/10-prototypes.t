@@ -35,7 +35,7 @@ is_deeply(
 );
 
 TODO: {
-    local $::TODO = "fakemap sub {}, 1; differs from map sub {}, 1";
+    local $TODO = "fakemap sub {}, 1; differs from map sub {}, 1";
     is_deeply(
         [map ref, fakemap sub { "_${_}_"}, 1..10],
         [map ref,     map sub { "_${_}_"}, 1..10],

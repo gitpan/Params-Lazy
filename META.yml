@@ -3,11 +3,11 @@ abstract: 'Transparent lazy arguments for subroutines.'
 author:
   - 'Brian Fraser <fraserbn@gmail.com>'
 build_requires:
-  Test::More: 0.94
+  Test::More: 0.98
 configure_requires:
   ExtUtils::MakeMaker: 0
 dynamic_config: 1
-generated_by: 'ExtUtils::MakeMaker version 6.64, CPAN::Meta::Converter version 2.120921'
+generated_by: 'ExtUtils::MakeMaker version 6.68, CPAN::Meta::Converter version 2.131560'
 license: unknown
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.4.html
@@ -22,4 +22,4 @@ requires:
   perl: 5.008008
   strict: 0
   warnings: 0
-version: 0.001
+version: 0.002

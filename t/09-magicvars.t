@@ -24,14 +24,14 @@ sub {
 
 if ( $] >= 5.014 ) {
     lazy_test ${^GLOBAL_PHASE},
-              "RUN",
+              ${^GLOBAL_PHASE},
               'lazy_return(${^GLOBAL_PHASE}) works';
 }
 
 BEGIN {
     if ( $] >= 5.014 ) {
         lazy_test ${^GLOBAL_PHASE},
-              "START",
+              ${^GLOBAL_PHASE},
               'BEGIN{lazy_return(${^GLOBAL_PHASE})}';
     }
     

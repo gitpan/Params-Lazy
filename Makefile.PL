@@ -32,7 +32,7 @@ WriteMakefile(
         ( $] < 5.014 ? ("IO::File" => 0) : () ),
     },
     BUILD_REQUIRES => {
-        'Test::More' => 0.94,
+        'Test::More' => 0.98,
     },
     PREREQ_PM => {
         ( $] < 5.014 ? ("Devel::CallChecker" => 0) : () ),

@@ -16,6 +16,7 @@ t/07-caller.t
 t/08-evil.t
 t/09-magicvars.t
 t/10-prototypes.t
+t/11-all.t
 t/lib/lexical_topic_tests.pm
 t/author.t
 ignore.txt

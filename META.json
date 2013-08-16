@@ -4,7 +4,7 @@
       "Brian Fraser <fraserbn@gmail.com>"
    ],
    "dynamic_config" : 1,
-   "generated_by" : "ExtUtils::MakeMaker version 6.64, CPAN::Meta::Converter version 2.120921",
+   "generated_by" : "ExtUtils::MakeMaker version 6.68, CPAN::Meta::Converter version 2.131560",
    "license" : [
       "unknown"
    ],
@@ -22,7 +22,7 @@
    "prereqs" : {
       "build" : {
          "requires" : {
-            "Test::More" : "0.94"
+            "Test::More" : "0.98"
          }
       },
       "configure" : {
@@ -40,5 +40,5 @@
       }
    },
    "release_status" : "stable",
-   "version" : "0.001"
+   "version" : "0.002"
 }

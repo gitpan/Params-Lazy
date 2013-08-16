@@ -1,3 +1,5 @@
+no if $] >= 5.018, warnings => "experimental::lexical_topic";
+
 {
     my $_ = "lexical"; 
     my $ret = stress_test("my dollar under: <$_>");

@@ -1,5 +1,11 @@
 Revision history for Params-Lazy
 
-0.01    2013-08-13T14:41:16:-0300
+0.002   2013-08-16T15:34:47:-0300
+        * Delaying a range should no longer crash
+        * Delayed goto's are now correctly disallowed in 5.18
+        * Lexical $_ tests no longer emmit deprecation warnings
+        * New meta-test should catch stack corruptions
+
+0.001   2013-08-13T14:41:16:-0300
         First version, released on an unsuspecting world.
 
