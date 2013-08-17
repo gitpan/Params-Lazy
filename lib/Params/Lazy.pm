@@ -16,7 +16,7 @@ our @ISA       = qw(Exporter);
 our @EXPORT    = "force";
 our @EXPORT_OK = "force";
 
-our $VERSION = '0.002';
+our $VERSION = '0.003';
 
 require XSLoader;
 XSLoader::load('Params::Lazy', $VERSION);
@@ -60,8 +60,6 @@ sub import {
     $self->export_to_level(1);
 }
 
-1;
-
 =encoding utf8
 
 =head1 NAME
@@ -70,7 +68,7 @@ Params::Lazy - Transparent lazy arguments for subroutines.
 
 =head1 VERSION
 
-Version 0.002
+Version 0.003
 
 =head1 SYNOPSIS
 
@@ -134,7 +132,7 @@ Otherwise, it gives you a delayed argument you can use with C<force()>.
 
 =head1 EXPORT
 
-=head2 force($delayed)
+=head2 force $delayed
 
 Runs the delayed code.
 
@@ -154,11 +152,7 @@ differently than the default map.
 
 =item *
 
-Strange things will happen if you goto LABEL out of a lazy argument.
-
-=item *
-
-It's also important to note that delayed arguments are *not* closures,
+It's important to note that delayed arguments are C<*not*> closures,
 so storing them for later use will likely lead to crashes, segfaults,
 and a general feeling of malignancy to descend upon you, your family,
 and your cat.  Passing them to other functions should work fine, but
@@ -175,9 +169,10 @@ the program.
 
 =item *
 
-Finally, delayed arguments, although intended to be faster & more 
-lightweight than coderefs, are currently between 5% and 100% B<slower>
-than passing a coderef and dereferencing it, so beware!
+Finally, while delayed arguments are intended to be faster & more 
+lightweight than passing coderefs, are at best just as fast, and
+generally anywhere between 5% and 100% B<slower> than passing a
+coderef and dereferencing it, so beware!
 
 =back
 

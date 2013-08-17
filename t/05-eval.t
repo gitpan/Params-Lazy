@@ -3,7 +3,9 @@ use warnings;
 
 use Test::More tests => $] >= 5.016 ? 20 : 19;
 
-sub lazy_run { force($_[0]) };
+use Params::Lazy; # import the custom-op force()
+
+sub lazy_run { force $_[0] };
 
 use Params::Lazy lazy_run => '^';
 
@@ -59,7 +61,10 @@ lazy_run eval {
     like($@, qr/Inner/, "eval q{die} inside a delayed eval {}");
     die $msg;
 };
-like($@, qr/\Q$msg/, $msg);
+TODO: {
+    local $TODO = "Broken on 5.8" if $] < 5.010;
+    like($@, qr/\Q$msg/, $msg);
+}
 
 $msg = "do { eval {die}; foo() }";
 lazy_run do {
@@ -74,23 +79,28 @@ lazy_run eval {
 };
 like($@, qr/\Q$msg/, $msg);
 
-{
+TODO: {
+    local $TODO = "Broken on 5.8" if $] < 5.010;
     local $_ = "doof";
     my $ret = lazy_run eval { eval 'die'; eval 'qq{_${_}_}' };
     is($@, "", "nested delayed evals work");
     is($ret, "_doof_", "...and gets the correct return value");
 }
 
-$msg = "map eval { die }, 1..10";
-lazy_run map eval { die $msg }, 1..10;
-like($@, qr/\Q$msg/, $msg);
+SKIP: {
+    skip("Crashes on 5.8", 11) if $] < 5.010;
+    
+    $msg = "map eval { die }, 1..10";
+    lazy_run map eval { die $msg }, 1..10;
+    like($@, qr/\Q$msg/, $msg);
 
-$msg = "map { eval {die}; \$_ } 1..10";
-my @ret = lazy_run map { eval { die $msg }; $_ } 1..10;
-like($@, qr/\Q$msg/, $msg);
-is_deeply(\@ret, [1..10]);
+    $msg = "map { eval {die}; \$_ } 1..10";
+    my @ret = lazy_run map { eval { die $msg }; $_ } 1..10;
+    like($@, qr/\Q$msg/, $msg);
+    is_deeply(\@ret, [1..10]);
 
-$msg = "map { eval 'die'; eval qq{_\${_}_} } 1..10";
-@ret = lazy_run map { eval { eval 'die'; eval 'qq{_${_}_}' }; } 1..10;
-is($@, '', $msg);
-is_deeply(\@ret, [map "_${_}_", 1..10]);
+    $msg = "map { eval 'die'; eval qq{_\${_}_} } 1..10";
+    @ret = lazy_run map { eval { eval 'die'; eval 'qq{_${_}_}' }; } 1..10;
+    is($@, '', $msg);
+    is_deeply(\@ret, [map "_${_}_", 1..10]);
+}

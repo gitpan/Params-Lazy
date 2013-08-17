@@ -28,14 +28,14 @@ WriteMakefile(
     MIN_PERL_VERSION => 5.008008,
     CONFIGURE_REQUIRES => {
         'ExtUtils::MakeMaker' => 0,
-        ( $] < 5.014 ? ("Devel::CallChecker" => 0) : () ),
-        ( $] < 5.014 ? ("IO::File" => 0) : () ),
+        "Devel::CallChecker" => 0,
+        "IO::File" => 0,
     },
     BUILD_REQUIRES => {
         'Test::More' => 0.98,
     },
     PREREQ_PM => {
-        ( $] < 5.014 ? ("Devel::CallChecker" => 0) : () ),
+        "Devel::CallChecker" => 0,
         "XSLoader" => 0,
         "strict" => 0,
         "warnings" => 0,

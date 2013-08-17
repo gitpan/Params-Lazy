@@ -1,5 +1,11 @@
 Revision history for Params-Lazy
 
+0.003   2013-08-17T08:23:23:-0300
+        * force() may now inline itself as a custom op.
+        * The deferred op is now treated as if run within a
+          pseudoblock, or an eval block in 5.8.
+        * Windows support
+
 0.002   2013-08-16T15:34:47:-0300
         * Delaying a range should no longer crash
         * Delayed goto's are now correctly disallowed in 5.18

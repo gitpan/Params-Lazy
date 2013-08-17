@@ -1,3 +1,7 @@
+#define PERL_NO_GET_CONTEXT 1
+#ifdef WIN32
+#  define NO_XSLOCKS
+#endif
 #include "EXTERN.h"
 #include "perl.h"
 #include "XSUB.h"
@@ -13,6 +17,10 @@
 #  ifndef PL_restartjmpenv
 #    define PL_restartjmpenv    cxstack[cxstack_ix+1].blk_eval.cur_top_env
 #  endif
+#endif
+
+#ifdef XopENTRY_set
+#  define GOT_CUSTOM_OPS
 #endif
 
 #ifndef MUTABLE_AV
@@ -32,6 +40,23 @@ THX_save_pushptr(pTHX_ void *const ptr, const int type)
     SSCHECK(2);
     SSPUSHPTR(ptr);
     SSPUSHINT(type);
+}
+#endif
+
+#ifndef cxinc
+#  define cxinc()       THX_cxinc(aTHX)
+/* Taken from scope.c */
+I32
+THX_cxinc(pTHX)
+{
+    dVAR;
+    const IV old_max = cxstack_max;
+    cxstack_max = cxstack_max + 1;
+    Renew(cxstack, cxstack_max + 1, PERL_CONTEXT);
+    /* Without any kind of initialising deep enough recursion
+     * will end up reading uninitialised PERL_CONTEXTs. */
+    PoisonNew(cxstack + old_max + 1, cxstack_max - old_max, PERL_CONTEXT);
+    return cxstack_ix + 1;
 }
 #endif
 
@@ -69,6 +94,26 @@ THX_linklist(pTHX_ OP *o)
     return o->op_next;
 }
 #  endif
+#endif
+
+#ifndef op_contextualize
+#  define scalar(op) Perl_scalar(aTHX_ op)
+#  define list(op) Perl_list(aTHX_ op)
+#  define scalarvoid(op) Perl_scalarvoid(aTHX_ op)
+# define op_contextualize(op, c) THX_op_contextualize(aTHX_ op, c)
+OP *
+THX_op_contextualize(pTHX_ OP *o, I32 context)
+{
+    switch (context) {
+        case G_SCALAR: return scalar(o);
+        case G_ARRAY:  return list(o);
+        case G_VOID:   return scalarvoid(o);
+        default:
+            Perl_croak(aTHX_ "panic: op_contextualize bad context %ld",
+                       (long) context);
+            return o;
+    }
+}
 #endif
 
 typedef struct {
@@ -123,7 +168,7 @@ replace_with_delayed(pTHX_ OP* aop) {
     kid->op_sibling = 0;
 
     /* Make GIMME in the deferred op be OPf_WANT_LIST */
-    Perl_list(aTHX_ kid);
+    op_contextualize(kid, G_ARRAY);
     
     listop = newLISTOP(OP_LIST, 0, kid, (OP*)NULL);
     LINKLIST(listop);
@@ -141,7 +186,7 @@ replace_with_delayed(pTHX_ OP* aop) {
      * Obviously this is suboptimal and probably works by sheer
      * luck, so, FIXME
      */
-    Perl_list(aTHX_ listop);   
+    op_contextualize(listop, G_ARRAY);
     
     ctx->delayed = (OP*)listop;
 
@@ -202,6 +247,12 @@ THX_ck_entersub_args_delay(pTHX_ OP *entersubop, GV *namegv, SV *ckobj)
     return ck_entersub_args_proto(entersubop, namegv, proto);
 }
 
+#ifdef CXp_MULTICALL
+#  define CX_BLOCK_FLAG CXp_MULTICALL
+#else
+#  define CX_BLOCK_FLAG CXp_TRYBLOCK
+#endif
+
 STATIC void
 S_do_force(pTHX)
 {
@@ -211,11 +262,10 @@ S_do_force(pTHX)
     delay_ctx *ctx;
     const I32 gimme = GIMME_V;
     I32 i, oldscope;
+    U32 cx_type_flag = CX_BLOCK_FLAG;
+    PERL_CONTEXT *cx;
 #ifndef GOT_CUR_TOP_ENV
     JMPENV *cur_top_env;
-#endif
-#ifdef CXp_MULTICALL
-    PERL_CONTEXT *cx;
 #endif
     IV retvals, before;
     int ret = 0;
@@ -233,7 +283,11 @@ S_do_force(pTHX)
     SAVEOP();
     SAVECOMPPAD();
 
+#if (PERL_REVISION == 5 && PERL_VERSION >= 10)
+    PUSHSTACKi(PERLSI_SORT);
+#else
     PUSHSTACK;
+#endif
 
     /* The SAVECOMPPAD and SAVEOP will restore these */
     PL_curpad  = AvARRAY(ctx->comppad);
@@ -242,31 +296,28 @@ S_do_force(pTHX)
     
     PUSHMARK(PL_stack_sp);
     
-    before = (IV)(PL_stack_sp-PL_stack_base);
-    
-    /* Call the deferred ops */
-    /* Unfortunately we can't just do a CALLRUNOPS, since we must
-     * handle the case of the delayed op being an eval, or a
-     * pseudo-block with an eval inside, and that eval dying.
-     */
-    
+    before      = (IV)(PL_stack_sp-PL_stack_base);    
 
     oldscope    = PL_scopestack_ix;
 #ifndef GOT_CUR_TOP_ENV
     cur_top_env = PL_top_env;
 #endif
-    
-    /* Disallow "delay goto &sub" and similar
+
+    /* Disallow "delay goto &sub" and similar by pretending
+     * to be a MULTICALL sub, or an eval block on 5.8.
      * This is required because of a possible regression in
-     * perls 5.18 and newer, which caused this to segfault
-     * because it wouldn't recognize it as outside of a sub.
+     * perls 5.18 and newer, which caused it to segfault
+     * because it wouldn't recognize us as outside of a sub.
      * "Possible" because it's more likely that it was never
      * supposed to work.
      */
-#ifdef CXp_MULTICALL
-    cx = &cxstack[cxstack_ix];
-    cx->cx_type |= CXp_MULTICALL;
-#endif
+    PUSHBLOCK(cx, cx_type_flag, PL_stack_sp);
+
+    /* Call the deferred ops */
+    /* Unfortunately we can't just do a CALLRUNOPS, since we must
+     * handle the case of the delayed op being an eval, or a
+     * pseudo-block with an eval inside, and that eval dying.
+     */
 
     JMPENV_PUSH(ret);
 
@@ -333,6 +384,9 @@ S_do_force(pTHX)
         }
     }
 
+    /* Lightweight POPBLOCK */
+    cxstack_ix--;
+    
     (void)POPMARK;
     POPSTACK;
     
@@ -347,7 +401,57 @@ S_do_force(pTHX)
     
 }
 
+#ifdef GOT_CUSTOM_OPS
+static OP*
+S_pp_force(pTHX)
+{
+    PL_stack_sp--;
+    ENTER;
+    S_do_force(aTHX);
+    LEAVE;
+    return NORMAL;
+}
+
+static OP *
+S_ck_force(pTHX_ OP *entersubop, GV *namegv, SV *cv)
+{
+    OP *aop, *prev, *first = NULL;
+    UNOP *newop;
+
+    ck_entersub_args_proto(entersubop, namegv, cv);
+
+    aop = cUNOPx(entersubop)->op_first;
+    if (!aop->op_sibling)
+       aop = cUNOPx(aop)->op_first;
+    prev = aop;
+    aop = aop->op_sibling;
+    first = aop;
+    prev->op_sibling = first->op_sibling;
+    first->op_flags &= ~OPf_MOD;
+    aop = aop->op_sibling;
+    /* aop now points to the cvop */
+    prev->op_sibling = aop->op_sibling;
+    aop->op_sibling = NULL;
+    first->op_sibling = aop;
+
+    NewOp(1234, newop, 1, UNOP);
+    newop->op_type    = OP_CUSTOM;
+    newop->op_ppaddr  = S_pp_force;
+    newop->op_first   = first;
+    newop->op_private = 1;
+    newop->op_flags   = entersubop->op_flags;
+
+    op_free(entersubop);
+
+    return (OP *)newop;
+}
+
+static XOP my_xop;
+#endif /* GOT_CUSTOM_OPS */
+
 MODULE = Params::Lazy		PACKAGE = Params::Lazy		
+
+PROTOTYPES: ENABLE
 
 void
 cv_set_call_checker_delay(CV *cv, SV *proto)
@@ -356,7 +460,20 @@ CODE:
 
 void
 force(sv)
+PROTOTYPE: $
 PPCODE:
     S_do_force(aTHX);
     SP = PL_stack_sp;
-    
+
+BOOT:
+{
+#ifdef GOT_CUSTOM_OPS
+    CV * const cv = get_cvn_flags("Params::Lazy::force", 19, 0);
+    cv_set_call_checker(cv, S_ck_force, (SV *)cv);
+
+    XopENTRY_set(&my_xop, xop_name, "force");
+    XopENTRY_set(&my_xop, xop_desc, "force");
+    XopENTRY_set(&my_xop, xop_class, OA_UNOP);
+    Perl_custom_op_register(aTHX_ S_pp_force, &my_xop);
+#endif
+}
