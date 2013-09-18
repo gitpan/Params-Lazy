@@ -1,5 +1,29 @@
 Revision history for Params-Lazy
 
+0.004   UNRELEASED
+        * Delaying an expression that doesn't return anything,
+          like a regular expression that didn't match, and then
+          running force() in scalar context will now correctly
+          return undef, instead of picking the topmost value of
+          the stack.
+        * Delayed expressions now have the original @_ in scope;
+          this allows things like 'delay shift;' or
+          'delay function($_[0], $_[3], 10)' to DTRT.
+          The old behavior is still accessible through
+          'no Params::Lazy q(caller_args)', primarily for speed:
+          Some dumbbenching shows the no-caller-args version to be
+          around 20% faster.
+          This fixes #87940.
+        * Initial threading support. Experimental!
+        * delay sub { $lexical } and the like now work, at least in
+          5.18.  In older perls, they work but with some caveats --
+          see the documentation for more information.
+        * force() now inlines itself as a custom op in even
+          more Perls.
+        * delay eval '$foo' will no longer see delayer's lexicals.
+        * __SUB__ should now return the correct value.
+        * Minor test fixups, proper skips for 5.8.
+
 0.003   2013-08-17T08:23:23:-0300
         * force() may now inline itself as a custom op.
         * The deferred op is now treated as if run within a

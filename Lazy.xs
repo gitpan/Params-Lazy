@@ -19,12 +19,22 @@
 #  endif
 #endif
 
-#ifdef XopENTRY_set
-#  define GOT_CUSTOM_OPS
+#ifdef USE_ITHREADS
+#  if (PERL_VERSION < 8) || (PERL_VERSION == 8 && PERL_SUBVERSION < 9)
+#    define tTHX PerlInterpreter*
+#  endif
+#endif
+
+#ifndef sv_dup_inc
+#  define sv_dup_inc(s,t) SvREFCNT_inc(sv_dup(s,t))
 #endif
 
 #ifndef MUTABLE_AV
 #  define MUTABLE_AV(p)   ((AV *)(void *)(p))
+#endif
+
+#ifndef PadlistARRAY
+#  define PadlistARRAY(pad)  AvARRAY(pad)
 #endif
 
 #ifndef save_op
@@ -116,23 +126,235 @@ THX_op_contextualize(pTHX_ OP *o, I32 context)
 }
 #endif
 
+#ifdef Perl_finalize_optree
+#  define finalize_optree(o) Perl_finalize_optree(aTHX_ o)
+#else
+#  define finalize_optree(o) THX_finalize_optree(aTHX_ o)
+#  define finalize_op(o)     THX_finalize_op(aTHX_ o)
+
+#if !defined(PAD_SETSV) || (defined(DEBUGGING) && !defined(pad_setsv))
+/* Under DEBUGGING, PAD_SETSV is defined as pad_setsv(),
+ * that's not part of the API.
+ */
+#  undef PAD_SETSV
+#  define PAD_SETSV(ix, sv) PL_curpad[ix] = (sv)
+#endif
+
+#ifndef pad_alloc
+ 
+#define pad_alloc(optype, tmptype) THX_pad_alloc(aTHX_ optype, tmptype)
+ 
+STATIC PADOFFSET
+THX_pad_alloc(pTHX_ I32 optype, U32 tmptype) {
+    dVAR;
+    SV *sv;
+    I32 retval;
+ 
+    PERL_UNUSED_ARG(optype);
+    ASSERT_CURPAD_ACTIVE("pad_alloc");
+ 
+    if (AvARRAY(PL_comppad) != PL_curpad)
+        Perl_croak(aTHX_ "panic: pad_alloc");
+    PL_pad_reset_pending = FALSE;
+    if (tmptype & SVs_PADMY) {
+        sv = *av_fetch(PL_comppad, AvFILLp(PL_comppad) + 1, TRUE);
+        retval = AvFILLp(PL_comppad);
+    }
+    else {
+        SV * const * const names = AvARRAY(PL_comppad_name);
+        const SSize_t names_fill = AvFILLp(PL_comppad_name);
+        for (;;) {
+            if (++PL_padix <= names_fill &&
+                (sv = names[PL_padix]) && sv != &PL_sv_undef)
+                continue;
+            sv = *av_fetch(PL_comppad, PL_padix, TRUE);
+            if (!(SvFLAGS(sv) & (SVs_PADTMP | SVs_PADMY)) &&
+                !IS_PADGV(sv) && !IS_PADCONST(sv))
+                break;
+        }
+        retval = PL_padix;
+    }
+    SvFLAGS(sv) |= tmptype;
+    PL_curpad = AvARRAY(PL_comppad);
+ 
+#ifdef DEBUG_LEAKING_SCALARS
+    sv->sv_debug_optype = optype;
+    sv->sv_debug_inpad = 1;
+#endif
+    return (PADOFFSET)retval;
+}
+ 
+#endif
+
+/* Lifted from op.c */
+STATIC void
+THX_finalize_op(pTHX_ OP* o)
+{
+    switch (o->op_type) {
+    case OP_CONST:
+#ifdef USE_ITHREADS
+# ifdef OP_HINTSEVAL
+    case OP_HINTSEVAL:
+# endif
+    case OP_METHOD_NAMED:
+	/* Relocate sv to the pad for thread safety.
+	 * Despite being a "constant", the SV is written to,
+	 * for reference counts, sv_upgrade() etc. */
+	if (cSVOPo->op_sv) {
+	    const PADOFFSET ix = pad_alloc(OP_CONST, SVf_READONLY);
+	    if (o->op_type != OP_METHOD_NAMED
+		&& cSVOPo->op_sv == &PL_sv_undef) {
+		/* PL_sv_undef is hack - it's unsafe to store it in the
+		   AV that is the pad, because av_fetch treats values of
+		   PL_sv_undef as a "free" AV entry and will merrily
+		   replace them with a new SV, causing pad_alloc to think
+		   that this pad slot is free. (When, clearly, it is not)
+		*/
+		SvOK_off(PAD_SVl(ix));
+		SvPADTMP_on(PAD_SVl(ix));
+		SvREADONLY_on(PAD_SVl(ix));
+	    }
+	    else {
+		SvREFCNT_dec(PAD_SVl(ix));
+		PAD_SETSV(ix, cSVOPo->op_sv);
+		/* XXX I don't know how this isn't readonly already. */
+		if (!SvIsCOW(PAD_SVl(ix))) SvREADONLY_on(PAD_SVl(ix));
+	    }
+	    cSVOPo->op_sv = NULL;
+	    o->op_targ = ix;
+	}
+#endif
+	break;
+    case OP_HELEM: {
+	SV *lexname;
+	SV **svp, *sv;
+	const char *key = NULL;
+	STRLEN keylen;
+
+	if (((BINOP*)o)->op_last->op_type != OP_CONST)
+	    break;
+
+	svp = cSVOPx_svp(((BINOP*)o)->op_last);
+	if ((!SvIsCOW_shared_hash(sv = *svp))
+	    && SvTYPE(sv) < SVt_PVMG && SvOK(sv) && !SvROK(sv)) {
+	    key = SvPV_const(sv, keylen);
+	    lexname = newSVpvn_share(key,
+		SvUTF8(sv) ? -(I32)keylen : (I32)keylen,
+		0);
+		if (sv)
+	        SvREFCNT_dec(sv);
+	    *svp = lexname;
+	}
+	break;
+    }
+#if (PERL_REVISION == 5 && PERL_VERSION >= 10)
+    case OP_SUBST: {
+      if (cPMOPo->op_pmreplrootu.op_pmreplroot)
+        finalize_op(cPMOPo->op_pmreplrootu.op_pmreplroot);
+      break;
+    }
+#endif
+    default:
+        break;
+    }
+
+    if (o->op_flags & OPf_KIDS) {
+        OP *kid;
+        for (kid = cUNOPo->op_first; kid; kid = kid->op_sibling)
+            finalize_op(kid);
+    }
+}
+
+void
+THX_finalize_optree(pTHX_ OP* o)
+{
+    ENTER;
+    SAVEVPTR(PL_curcop);
+
+    finalize_op(o);
+
+    LEAVE;
+}
+
+#endif /* Perl_finalize_optree */
+
+#define MY_CXT_KEY "Params::Lazy::_guts" XS_VERSION
+
+#define hintkey     "Params::Lazy/no_caller_args"
+#define hintkey_len  (sizeof(hintkey)-1)
+
+typedef struct {
+#ifdef USE_ITHREADS
+ tTHX owner; /* The interpeter that owns the two below */
+#endif                 /* These are the 'original' values for */
+ SV*  orig_defav;      /* @_ */
+ AV*  orig_comppad;    /* PL_comppad */
+ COP* orig_curcop;     /* PL_curcop */
+ I32  orig_cxstack_ix; /* cxstack_ix */
+} my_cxt_t;
+
+START_MY_CXT
+
 typedef struct {
  OP *delayed;
- 
  AV *comppad;
 } delay_ctx;
 
-static int magic_free(pTHX_ SV *sv, MAGIC *mg)
+STATIC int magic_free(pTHX_ SV *sv, MAGIC *mg)
 {
   delay_ctx *ctx = (void *)mg->mg_ptr;
- 
+  OP* o = (OP*)ctx->delayed;
+  PADOFFSET refcnt;
+
   PERL_UNUSED_ARG(sv);
- 
-  op_free((OP*)ctx->delayed);
-  Safefree(ctx);
- 
+
+  OP_REFCNT_LOCK;
+  refcnt = OpREFCNT_dec(o);
+  OP_REFCNT_UNLOCK;
+  
+  if (!refcnt) {
+    /* o's refcount is 0, which means that no threads are 
+     * running and we can free both the OP and the struct.
+     */
+#ifdef USE_ITHREADS
+    /* XXX TODO this works. It probably shouldn't. */
+    ENTER;
+    SAVECOMPPAD();
+    PL_comppad = ctx->comppad;
+    PL_curpad  = AvARRAY(PL_comppad);
+#endif
+    op_free(o);
+#ifdef USE_ITHREADS
+    LEAVE;
+#endif
+    Safefree(ctx);
+  }
+  
   return 1;
 }
+
+#ifdef USE_ITHREADS
+/* We need to up the op's refcount so that its only freed
+ * when the main thread exits, assuming no threads were
+ * left running.
+ * No need to actually dup the struct or ctx->comppad, since
+ * they are only used on the main thread.
+ */
+STATIC int magic_dup(pTHX_ MAGIC *mg, CLONE_PARAMS *params)
+{
+  delay_ctx *ctx = (void *)mg->mg_ptr;
+  OP* o = (OP*)ctx->delayed;
+  
+  PERL_UNUSED_ARG(params);
+  
+  OP_REFCNT_LOCK;
+  (void)OpREFCNT_inc(o);
+  OP_REFCNT_UNLOCK;
+  
+  return 0;
+}
+#endif
+
  
 static MGVTBL vtbl = {
   NULL, /* get */
@@ -144,108 +366,16 @@ static MGVTBL vtbl = {
   NULL, /* copy */
 #endif
 #ifdef MGf_DUP
+# ifdef USE_ITHREADS
+  &magic_dup,
+# else
   NULL, /* dup */
+# endif
 #endif
 #ifdef MGf_LOCAL
   NULL /* local */
 #endif
 };
-
-STATIC OP *
-replace_with_delayed(pTHX_ OP* aop) {
-    OP* new_op;
-    OP* const kid = aop;
-    OP* const sib = kid->op_sibling;
-    SV* magic_sv  = newSVpvs("STATEMENT");
-    OP *listop;
-    delay_ctx *ctx;
-
-    Newx(ctx, 1, delay_ctx);
-
-    /* Disconnect the op we're delaying, then wrap it in
-     * a OP_LIST
-     */
-    kid->op_sibling = 0;
-
-    /* Make GIMME in the deferred op be OPf_WANT_LIST */
-    op_contextualize(kid, G_ARRAY);
-    
-    listop = newLISTOP(OP_LIST, 0, kid, (OP*)NULL);
-    LINKLIST(listop);
-
-    /* Stop it from looping */
-    cUNOPx(kid)->op_next = (OP*)NULL;
-
-    /* XXX TODO: Calling this twice, once before the LINKLIST
-     * and once after, solves a bug; namely, that "delay 1..10"
-     * would fail an assertion, because calling list() on an
-     * OP_LIST would call lintkids(), which in turn calls
-     * gen_constant_list for this sort of expression, and
-     * without the first list(), it confuses the range
-     * with a flip-flop.
-     * Obviously this is suboptimal and probably works by sheer
-     * luck, so, FIXME
-     */
-    op_contextualize(listop, G_ARRAY);
-    
-    ctx->delayed = (OP*)listop;
-
-    /* We use this to restore the context the ops were
-     * originally running in */
-    ctx->comppad = PL_comppad;
-
-    /* Magicalize the scalar, */
-    sv_magicext(magic_sv, (SV*)NULL, PERL_MAGIC_ext, &vtbl, (const char *)ctx, 0);
-
-    /* Then put that in place of the OPs we removed, but wrap
-     * as a ref.
-     */
-    new_op = (OP*)newSVOP(OP_CONST, 0, newRV_noinc(magic_sv));
-    new_op->op_sibling = sib;
-    return new_op;
-}
-
-STATIC OP *
-THX_ck_entersub_args_delay(pTHX_ OP *entersubop, GV *namegv, SV *ckobj)
-{
-    SV *proto            = newSVsv(ckobj);
-    STRLEN protolen, len = 0;
-    char * protopv       = SvPV(proto, protolen);
-    OP *aop, *prev;
-    
-    PERL_UNUSED_ARG(namegv);
-    
-    aop = cUNOPx(entersubop)->op_first;
-    
-    if (!aop->op_sibling)
-        aop = cUNOPx(aop)->op_first;
-    
-    prev = aop;
-    
-    for (aop = aop->op_sibling; aop->op_sibling; aop = aop->op_sibling) {
-        if ( len < protolen ) {
-            switch ( protopv[len] ) {
-                case ':':
-                    if ( aop->op_type == OP_REFGEN ) {
-                        protopv[len] = '&';
-                        break;
-                    }
-                    /* Fallthrough */
-                case '^':
-                {
-                    aop = replace_with_delayed(aTHX_ aop);
-                    prev->op_sibling = aop;
-                    protopv[len] = '$';
-                    break;
-                }
-            }
-        }
-        prev = aop;
-        len++;
-    }
-    
-    return ck_entersub_args_proto(entersubop, namegv, proto);
-}
 
 #ifdef CXp_MULTICALL
 #  define CX_BLOCK_FLAG CXp_MULTICALL
@@ -254,24 +384,27 @@ THX_ck_entersub_args_delay(pTHX_ OP *entersubop, GV *namegv, SV *ckobj)
 #endif
 
 STATIC void
-S_do_force(pTHX)
+S_do_force(pTHX_ SV* sv, bool use_caller_args)
 {
+    dMY_CXT;
     dSP;
     dJMPENV;
-    SV *sv = POPs;
     delay_ctx *ctx;
     const I32 gimme = GIMME_V;
     I32 i, oldscope;
-    U32 cx_type_flag = CX_BLOCK_FLAG;
-    PERL_CONTEXT *cx;
+    /* cx is the context the delayed expression will
+     * be run in, delayer_cx is the context where the
+     * expression was delayed.
+     */
+    PERL_CONTEXT *cx, *delayer_cx;
 #ifndef GOT_CUR_TOP_ENV
     JMPENV *cur_top_env;
 #endif
     IV retvals, before;
     int ret = 0;
     /* PL_curstack and PL_stack_sp in the delayed OPs */
-    AV *delayed_curstack;
-    SV **delayed_sp;
+    AV *delayed_curstack = NULL;
+    SV **delayed_sp = NULL;
 
     if ( SvROK(sv) && SvMAGICAL(SvRV(sv)) ) {
         ctx  = (void *)SvMAGIC(SvRV(sv))->mg_ptr;
@@ -279,9 +412,38 @@ S_do_force(pTHX)
     else {
         croak("force() requires a delayed argument");
     }
-
+    
     SAVEOP();
     SAVECOMPPAD();
+    save_pushptr((void *)PL_curcop, SAVEt_OP);
+
+    if ( MY_CXT.orig_curcop ) {
+        PL_curcop = MY_CXT.orig_curcop;
+    }
+    
+    /* This is likely reading PoisonNew() crap when the
+     * delayed argument is run in a different thread than
+     * the one it was delayed in.  Probably harmless.
+     */
+    delayer_cx = &cxstack[MY_CXT.orig_cxstack_ix+1];
+
+    SAVEINT(delayer_cx->cx_type);
+    
+#ifdef CXp_SUB_RE
+    /* In >5.18, we can have find_runcv skip the delayer by
+     * pretending to be a (?{}) sub.
+     */
+    delayer_cx->cx_type |= CXp_SUB_RE;
+#else
+    /* Tradeoff. Makes delay sub {$lexical} work, but
+     * breaks top-level delayed caller.
+     * We MUST restore this manually for a couple of operations
+     * that do a JMPENV, like exit, die, or goto, which means
+     * that for older perls, we can't use CALLRUNOPS, but instead
+     * must do the runloop manually.
+     */
+    delayer_cx->cx_type &= ~CXt_SUB;
+#endif
 
 #if (PERL_REVISION == 5 && PERL_VERSION >= 10)
     PUSHSTACKi(PERLSI_SORT);
@@ -290,15 +452,22 @@ S_do_force(pTHX)
 #endif
 
     /* The SAVECOMPPAD and SAVEOP will restore these */
-    PL_curpad  = AvARRAY(ctx->comppad);
-    PL_comppad = ctx->comppad;
     PL_op      = ctx->delayed;
     
+    if (MY_CXT.orig_comppad) {
+        PL_comppad = MY_CXT.orig_comppad;
+    }
+    else {
+        croak("Foobar");
+    }
+
+    PL_curpad  = AvARRAY(PL_comppad);
+
     PUSHMARK(PL_stack_sp);
     
-    before      = (IV)(PL_stack_sp-PL_stack_base);    
+    before     = (IV)(PL_stack_sp-PL_stack_base);
 
-    oldscope    = PL_scopestack_ix;
+    oldscope   = PL_scopestack_ix;
 #ifndef GOT_CUR_TOP_ENV
     cur_top_env = PL_top_env;
 #endif
@@ -311,21 +480,55 @@ S_do_force(pTHX)
      * "Possible" because it's more likely that it was never
      * supposed to work.
      */
-    PUSHBLOCK(cx, cx_type_flag, PL_stack_sp);
-
+    PUSHBLOCK(cx, CX_BLOCK_FLAG, PL_stack_sp);
+    
+    CX_CURPAD_SAVE(cx->blk_sub);
+    
+    /* Set up the proper @_ if requested */
+    if (use_caller_args && MY_CXT.orig_defav) {
+        AV *replaceav = MUTABLE_AV(SvRV(MY_CXT.orig_defav));
+        SAVESPTR(GvAV(PL_defgv));
+        SAVESPTR(CX_CURPAD_SV(cx->blk_sub, 0));
+#ifdef CXp_HASARGS
+        cx->cx_type         |= CXp_HASARGS;
+#else
+        cx->blk_sub.hasargs  = 1;
+#endif
+        cx->blk_sub.argarray = replaceav;
+        GvAV(PL_defgv)       = replaceav;
+        CX_CURPAD_SV(cx->blk_sub, 0) = (SV*)replaceav;
+    }
+    
     /* Call the deferred ops */
     /* Unfortunately we can't just do a CALLRUNOPS, since we must
      * handle the case of the delayed op being an eval, or a
      * pseudo-block with an eval inside, and that eval dying.
      */
-
     JMPENV_PUSH(ret);
 
     switch (ret) {
         case 0:
+            {
             redo_body:
+#ifdef CXp_SUB_RE
             CALLRUNOPS(aTHX);
+#else
+            /* See comments in the previous CXp_SUB_RE to see why
+             * we do this.
+             */
+            while ((PL_op = PL_op->op_ppaddr(aTHX))) {
+                /* XXX Is this missing anything? Is it necessary for exec? */
+                switch ( PL_op->op_type ) {
+                 case OP_GOTO:
+                 case OP_DIE:
+                 case OP_EXIT:
+                 case OP_EXEC:
+                    delayer_cx->cx_type |= CXt_SUB;
+                }
+            }
+#endif
             break;
+            }
         case 3:
             /* If there's a PL_restartop, then this eval can handle
              * things on their own.
@@ -389,27 +592,191 @@ S_do_force(pTHX)
     
     (void)POPMARK;
     POPSTACK;
-    
-    if ( retvals && gimme != G_VOID ) {
-        EXTEND(PL_stack_sp, retvals);
-        
-        for (i = retvals; i-- > before;) {
-            *++PL_stack_sp = sv_2mortal(*(delayed_sp-i));
+
+    if ( gimme != G_VOID ) {
+        if ( retvals ) {
+            EXTEND(PL_stack_sp, retvals);
+            
+            for (i = retvals; i-- > before;) {
+                *++PL_stack_sp = sv_2mortal(*(delayed_sp-i));
+#ifdef USE_ITHREADS
+                /* Makes this work:
+                 * threads->create(sub { map { force $f } 1..5 })
+                 * Since the map would reuse the same temp variable
+                 */
+                SvTEMP_off(*PL_stack_sp);
+#endif
+            }
+            SvREFCNT_dec(delayed_curstack);
         }
-        SvREFCNT_dec(delayed_curstack);
+        /* We don't have any return value, but in scalar context
+         * we must return something, so push an undef to the stack.
+         */
+        else if ( gimme == G_SCALAR ) {
+            EXTEND(PL_stack_sp, 1);
+            *++PL_stack_sp = &PL_sv_undef;
+        }
     }
     
 }
 
-#ifdef GOT_CUSTOM_OPS
-static OP*
+/* pp_delay gets called *before* the entersub of a function with
+ * delayed arguments, so it has the "original" @_ in scope.
+ * This kludge allows us do DTRT for a localized @_:
+ *     local @_ = qw(foo bar); say delay shift @_;
+ * will output "foo" and modify the correct @_.  Similarly,
+ *     local *_ = \@foo; say delay shift;
+ * will modify @foo as well as @_.
+ *
+ * The original cxstack and PL_comppad are also in scope,
+ * and we need to save them to get some other things working
+ * properly, like
+ *     my $foo; sub { delay $foo .= "string" }->()
+ */
+STATIC OP*
+S_pp_delay(pTHX)
+{
+    dMY_CXT;
+    
+    /* TODO these needs to be stored in the delayed argument
+     * itself, not in the sub. See the skipped tests in
+     * t/12-caller-args.t which would work if we did that
+     */
+    
+    /* Save the original arguments */
+    if ( PL_op->op_private ) {
+        AV *defav  = GvAVn(PL_defgv);
+        SAVESPTR(MY_CXT.orig_defav);
+        
+        if ( AvREAL(defav) ) {
+            /* If @_ was localized */
+            MY_CXT.orig_defav = newRV_noinc((SV*)GvAV(PL_defgv));
+        }
+        else if ( cxstack[cxstack_ix].blk_sub.argarray ) {
+            MY_CXT.orig_defav = newRV_noinc(SvREFCNT_inc_simple_NN((SV*)cxstack[cxstack_ix].blk_sub.argarray));
+        }
+        else {
+            MY_CXT.orig_defav = NULL;
+        }
+    }
+    
+    /* We use this to restore the context the ops were
+     * originally running in */
+    MY_CXT.orig_cxstack_ix = cxstack_ix;
+    MY_CXT.orig_curcop     = PL_curcop;
+    MY_CXT.orig_comppad    = PL_comppad;
+
+    return NORMAL;
+}
+
+#ifndef cBOOL
+#define cBOOL(cbool) ((cbool) ? (bool)1 : (bool)0)
+#endif
+
+STATIC OP*
 S_pp_force(pTHX)
 {
-    PL_stack_sp--;
+    SV *sv;
+    bool use_caller_args = cBOOL(PL_op->op_private);
+    PL_stack_sp--; /* The force() GV */
+    sv = *PL_stack_sp--;
+    
     ENTER;
-    S_do_force(aTHX);
+    S_do_force(aTHX_ sv, use_caller_args);
     LEAVE;
+    
     return NORMAL;
+}
+
+/* Returns true if we are to use the caller's args, false 
+ * otherwise.
+ */
+STATIC bool
+use_caller_args_hint(pTHX)
+#define use_caller_args_hint() use_caller_args_hint(aTHX)
+{
+ dVAR;
+ SV **val
+  = hv_fetch(GvHV(PL_hintgv), hintkey, hintkey_len, FALSE);
+ if (!val)
+  return TRUE;
+
+ if (!*val || !SvOK(*val)) return TRUE;
+
+ /* If there's a value and it's true, then we *don't* want
+  * to use the caller's args.
+  */
+ return !cBOOL(SvTRUE(*val));
+}
+
+STATIC OP *
+replace_with_delayed(pTHX_ OP* aop) {
+    MAGIC *mg;
+    OP* new_op;
+    OP* const kid = aop;
+    OP* const sib = kid->op_sibling;
+    SV* magic_sv  = newSVpvs("STATEMENT");
+    OP *listop;
+    delay_ctx *ctx;
+
+    Newx(ctx, 1, delay_ctx);
+
+    /* Disconnect the op we're delaying, then wrap it in
+     * a OP_LIST
+     */
+    kid->op_sibling = 0;
+
+    /* Make GIMME in the deferred op be OPf_WANT_LIST */
+    op_contextualize(kid, G_ARRAY);
+    
+    listop = newLISTOP(OP_LIST, 0, kid, (OP*)NULL);
+    LINKLIST(listop);
+
+    /* Stop it from looping */
+    cUNOPx(kid)->op_next = (OP*)NULL;
+
+#ifdef PL_rpeepp
+    /* XXX Might be overkill to call the peephole optimizer here? */
+    PL_rpeepp(aTHX_ kid);
+#endif
+    
+    /* XXX TODO: Calling this twice, once before the LINKLIST
+     * and once after, solves a bug; namely, that "delay 1..10"
+     * would fail an assertion, because calling list() on an
+     * OP_LIST would call lintkids(), which in turn calls
+     * gen_constant_list for this sort of expression, and
+     * without the first list(), it confuses the range
+     * with a flip-flop.
+     * Obviously this is suboptimal and probably works by sheer
+     * luck, so, FIXME
+     */
+    op_contextualize(listop, G_ARRAY);
+    
+    ctx->delayed = (OP*)listop;
+
+    /* Make the delayed op thread-safe */
+    finalize_optree(ctx->delayed);
+
+    OP_REFCNT_LOCK;
+    (void)OpREFCNT_set(ctx->delayed, 1);
+    OP_REFCNT_UNLOCK;
+    
+    ctx->comppad = PL_comppad;
+    
+    /* Magicalize the scalar, */
+    mg = sv_magicext(magic_sv, (SV*)NULL, PERL_MAGIC_ext, &vtbl, (const char *)ctx, 0);
+
+#ifdef USE_ITHREADS
+    /* Enable dup magic */
+    mg->mg_flags |= MGf_DUP;
+#endif
+
+    /* Then put that SV place of the OPs we removed, but wrap
+     * as a ref.
+     */
+    new_op = (OP*)newSVOP(OP_CONST, 0, newRV_noinc(magic_sv));
+    new_op->op_sibling = sib;
+    return new_op;
 }
 
 static OP *
@@ -438,7 +805,7 @@ S_ck_force(pTHX_ OP *entersubop, GV *namegv, SV *cv)
     newop->op_type    = OP_CUSTOM;
     newop->op_ppaddr  = S_pp_force;
     newop->op_first   = first;
-    newop->op_private = 1;
+    newop->op_private = use_caller_args_hint();
     newop->op_flags   = entersubop->op_flags;
 
     op_free(entersubop);
@@ -446,8 +813,95 @@ S_ck_force(pTHX_ OP *entersubop, GV *namegv, SV *cv)
     return (OP *)newop;
 }
 
-static XOP my_xop;
-#endif /* GOT_CUSTOM_OPS */
+STATIC OP *
+THX_ck_delay(pTHX_ OP *entersubop, GV *namegv, SV *ckobj)
+{
+    SV *proto            = newSVsv(ckobj);
+    STRLEN protolen, len = 0;
+    char * protopv       = SvPV(proto, protolen);
+    OP *aop, *prev;
+
+    PERL_UNUSED_ARG(namegv);
+    
+    aop = cUNOPx(entersubop)->op_first;
+    
+    if (!aop->op_sibling)
+        aop = cUNOPx(aop)->op_first;
+    
+    prev = aop;
+    
+    for (aop = aop->op_sibling; aop->op_sibling; aop = aop->op_sibling) {
+        if ( len < protolen ) {
+            switch ( protopv[len] ) {
+                case ':':
+                    if ( aop->op_type == OP_REFGEN ) {
+                        protopv[len] = '&';
+                        break;
+                    }
+                    /* Fallthrough */
+                case '^':
+                {
+                    aop = replace_with_delayed(aTHX_ aop);
+                    prev->op_sibling = aop;
+                    protopv[len] = '$';
+                    break;
+                }
+            }
+        }
+        prev = aop;
+        len++;
+    }
+    
+    return ck_entersub_args_proto(entersubop, namegv, proto);
+}
+
+/* First applies the delay magic to the entersubop, then
+ * adds one extra op to be run before the entersub itself
+ * but after the arguments for it are in the stack
+ */
+STATIC OP *
+THX_ck_delay_caller_args(pTHX_ OP *entersubop, GV *namegv, SV *ckobj)
+{
+    OP* op = THX_ck_delay(aTHX_ entersubop, namegv, ckobj);
+    UNOP *newop;
+    OP *aop;
+    
+    aop = cUNOPx(op)->op_first;
+    
+    if (!aop->op_sibling)
+        aop = cUNOPx(aop)->op_first;
+    
+    for (aop = aop->op_sibling; aop->op_sibling; aop = aop->op_sibling) {
+    }
+    
+    NewOp(1234, newop, 1, UNOP);
+    newop->op_type    = OP_CUSTOM;
+    newop->op_ppaddr  = S_pp_delay;
+    newop->op_private = use_caller_args_hint();
+    
+    aop->op_sibling = (OP*)newop;
+    return op;
+}
+
+#ifdef USE_ITHREADS
+STATIC SV*
+clone_sv(pTHX_ SV* sv, tTHX owner)
+#define clone_sv(s,v) clone_sv(aTHX_ (s), (v))
+{
+    CLONE_PARAMS param;
+    param.stashes    = NULL;
+    param.flags      = 0;
+    param.proto_perl = owner;
+
+    return sv_dup_inc(sv, &param);
+}
+
+#define clone_av(s,v) MUTABLE_AV(clone_sv((SV*)(s), (v)))
+#endif /* USE_ITHREADS */
+
+#ifdef XopENTRY_set
+static XOP my_xop, my_wrapop;
+#endif
 
 MODULE = Params::Lazy		PACKAGE = Params::Lazy		
 
@@ -456,24 +910,77 @@ PROTOTYPES: ENABLE
 void
 cv_set_call_checker_delay(CV *cv, SV *proto)
 CODE:
-    cv_set_call_checker(cv, THX_ck_entersub_args_delay, proto);
+    cv_set_call_checker(cv, THX_ck_delay_caller_args, proto);
 
 void
 force(sv)
 PROTOTYPE: $
 PPCODE:
-    S_do_force(aTHX);
+    SV *sv = *PL_stack_sp--;
+    S_do_force(aTHX_ sv, use_caller_args_hint());
     SP = PL_stack_sp;
+
+#ifdef USE_ITHREADS
+
+void
+CLONE(...)
+INIT:
+    SV *defav_clone = NULL;
+    AV *comppad_clone = NULL;
+CODE:
+{
+    PERL_UNUSED_ARG(items);
+    {
+        dMY_CXT;
+        tTHX owner = MY_CXT.owner;
+        
+        if ( MY_CXT.orig_defav ) {
+            SV *defavref = MY_CXT.orig_defav;
+            AV *defav    = MUTABLE_AV(SvRV(defavref));
+            defav_clone  = newRV_noinc((SV*)clone_av(defav, owner));
+        }
+        if ( MY_CXT.orig_comppad ) {
+            comppad_clone = clone_av(MY_CXT.orig_comppad, owner);
+        }
+        /* not needed?
+        if ( MY_CXT.orig_curcop ) {
+            curcop_clone = (COP*)any_dup(MY_CXT.orig_curcop, owner);
+        }
+        */
+    }
+    {
+        MY_CXT_CLONE;
+        MY_CXT.orig_defav = defav_clone;
+        MY_CXT.orig_comppad = comppad_clone;
+        MY_CXT.owner      = aTHX;
+    }
+}
+
+#endif /* USE_ITHREADS */
+
 
 BOOT:
 {
-#ifdef GOT_CUSTOM_OPS
     CV * const cv = get_cvn_flags("Params::Lazy::force", 19, 0);
+    MY_CXT_INIT;
+    MY_CXT.orig_defav = NULL;
+    MY_CXT.orig_comppad = NULL;
+    MY_CXT.orig_curcop  = NULL;
+    MY_CXT.orig_cxstack_ix = 0;
+#ifdef USE_ITHREADS
+    MY_CXT.owner = aTHX;
+#endif
     cv_set_call_checker(cv, S_ck_force, (SV *)cv);
-
+#ifdef XopENTRY_set
     XopENTRY_set(&my_xop, xop_name, "force");
     XopENTRY_set(&my_xop, xop_desc, "force");
     XopENTRY_set(&my_xop, xop_class, OA_UNOP);
     Perl_custom_op_register(aTHX_ S_pp_force, &my_xop);
-#endif
+    
+    XopENTRY_set(&my_wrapop, xop_name, "delay");
+    XopENTRY_set(&my_wrapop, xop_desc, "delay");
+    XopENTRY_set(&my_wrapop, xop_class, OA_UNOP);
+    Perl_custom_op_register(aTHX_ S_pp_delay, &my_wrapop);
+#endif /* XopENTRY_set */
 }
+

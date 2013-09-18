@@ -3,16 +3,18 @@ use warnings;
 
 use Test::More;
 
+use Params::Lazy lazy_run => '^$;$';
+
 sub lazy_run {
     no warnings 'exiting';
     FOO: {
-        eval { force($_[0]) };
+        eval { force $_[0] };
         like($@, $_[1], $_[2]);
         return;
     }
     fail("Should not get here");
 }
-use Params::Lazy lazy_run => '^$;$';
+
 
 sub empty      {}
 sub noreturn   { 1 }
@@ -29,26 +31,33 @@ sub {
     lazy_run goto &withreturn, $cant_goto, "inside a sub, delayed goto &explicitreturn dies";
 }->();
 
-my $return = $] < 5.010
+my $return = $] < 5.008009
            ? qr/\QCan't return outside a subroutine/
            : qr/\A\z/;
 lazy_run return, $return, "a delayed return dies";
-FOO: { lazy_run last FOO, qr/\QLabel not found for "last FOO"/, "a delayed last dies" };
+FOO: {
+    no warnings 'exiting';
+    lazy_run last FOO,
+    qr/\QLabel not found for "last FOO"/,
+    "a delayed last dies"
+};
 FOO: { lazy_run goto FOO, qr/\QCan't "goto" out of a pseudo block/, "a delayed goto LABEL dies" };
 
 
+{
+no Params::Lazy 'caller_args';
+use Params::Lazy modify_params_list => '^;@';
 sub modify_params_list {
     my ($delay) = @_;
     is(force($delay), $delay);
     return @_;
 }
-use Params::Lazy modify_params_list => '^;@';
-
+}
 my @ret = modify_params_list(shift(@_), 1..10);
 is_deeply(\@ret, [1..10], "can modify \@_ from a lazy arg");
 
-sub run_evil { force($_[0]); fail("Should never reach here") }
 use Params::Lazy run_evil => '^';
+sub run_evil { force($_[0]); fail("Should never reach here") }
 
 SKIP: {
     skip("No open -| on windows", 2) if $^O eq 'MSWin32';
@@ -88,4 +97,25 @@ SKIP: {
     like($@, qr/\QCan't "goto" out of a pseudo block at/, "delay goto LABEL is disallowed");
 }
 
+
+use Params::Lazy with_private_var => '^';
+sub with_private_var {
+    my ($f)     = @_;
+    my $private = 10;
+    return force $f;
+}
+
+my $ret = with_private_var(eval '$private');
+my $e   = $@;
+ok(
+    !$ret,
+    "a delayed eval STRING *can't* peek at the lexicals of the delayer"
+);
+
+like(
+    $e,
+    qr/Global symbol "\$private" requires explicit package name/,
+    "...and gives the right error message"
+);
+    
 done_testing;

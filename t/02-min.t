@@ -3,6 +3,7 @@ use warnings;
 
 use Test::More;
 
+use Params::Lazy delayed => '^^^$';
 sub delayed {
     my @retvals;
     push @retvals, force($_[1]);
@@ -11,8 +12,6 @@ sub delayed {
 
     return @retvals;
 }
-
-use Params::Lazy delayed => '^^^$';
 
 my @retvals = delayed
                   print("ok 3\n"),

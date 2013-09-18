@@ -29,7 +29,7 @@ sub stress_test {
         my $w = "";
         local $SIG{__WARN__} = sub { $w .= shift };
         warn force $_[0];
-        my $file = __FILE__;
+        my $file = (caller(0))[1];
         ($returns{warn}) = $w =~ m/(\A.+?) at $file/s;
         $w = "";
         warn "<", force $_[0], ">";
@@ -59,6 +59,43 @@ use Params::Lazy run => '^;@', stress_test => '^;@';
 
 my @range = run("a".."z");
 is_deeply(\@range, ["a".."z"], "can delay a range");
+
+my @a = 1..10;
+my $x;
+@range = ();
+my $count = 0;
+my @against;
+while ($_ = shift(@a)) {
+    my $times = int(rand(9)) || 1;
+    push @range, [run($x = /1/../10/, times => $times)];
+    if ( @a ) {
+        push @against, [ ($count+1)...($count+$times) ];
+        $count += $times;
+        is($x, $count, "the flip-flop is keeping state");
+    }
+    else {
+        my $last = $times == 1 ? ($count + 1) : 1;
+        like($x, qr/\A${last}E0\Z/, "Got the right end marker");
+        
+        my $last_batch = [ ($count + 1) . "E0" ];
+        if ( $times > 1 ) {
+            push @$last_batch, map { "1E0" } 1...$times-1;
+        }
+        push @against, $last_batch;
+        
+        is_deeply(
+            [run($x = /1/../10/, times => 5)],
+            [ map { "1E0" } 1..5 ],
+            "running the delayed flipflop again after it gets to the end keeps returning 1E0"
+        );
+    }
+}
+
+is_deeply(
+    \@range,
+    \@against,
+    "can delay a flip flop (scalar /foo/../bar/)"
+);
 
 () = @::empty;
 my @result = run(@::empty);
@@ -194,6 +231,9 @@ my $d = do {
     is($delay, "_1_", "can return a delayed argument and use it");
     force($f);
     is($delay, "_1__1_", "..multiple times");
+
+    sub { force $f }->();
+    is($delay, "_1__1__1_", "can return a delayed argument and then use it inside a different sub");
     $f;
 };
 
@@ -201,17 +241,151 @@ my $d = do {
     my $w = "";
     local $SIG{__WARN__} = sub { $w .= shift };
     force($d);
-    is($delay, "_1__1_", "Delayed arguments are not closures");
+    is($delay, "_1__1__1_", "Delayed arguments are not closures");
+    my $re = qr/Use of uninitialized value(?: \$foo)? in concatenation/;
     like(
         $w,
-        qr/Use of uninitialized value(?: \$foo)? in concatenation/,
+        $re,
         "Warns if a delayed argument used a variable that went out of scope"
     );
+    
+    $w = "";
+    sub { force $d }->();
+    is($delay, "_1__1__1_", "");
+    like($w, $re,  'Doesn\'t crash for my $f = do { return_delayed ... }; sub { force $f }->(), gives an uninit warning');
 }
+
+=begin Crashes, unsupported
+my $count = 10;
+my $delayed = do {
+    my $lex = 1;
+    my $delayed = return_delayed $count += $lex;
+    $delayed;
+};
+
+sub { force $delayed }->();
+=cut
 
 use lib 't/lib';
 if ($] >= 5.010) {
     require lexical_topic_tests;
+}
+
+use Params::Lazy passover_amp => q(^);
+sub passover_amp {
+   my @ret = (&run, &run, &run);
+   return @ret;
+}
+
+my $f = 1;
+@ret  = passover_amp $f++;
+is_deeply(\@ret, [1, 2, 3], "can delay an argument and then pass it to another delayer by using &foo");
+is($f, 4, "..and it uses the right variable");
+
+# TODO the above but with run(0, $_[0]) instead of &run
+
+use Params::Lazy delay => q(^);
+sub delay { return force shift }
+
+my $fus = 10;
+my $fus_sub = delay sub { "fus: $fus" };
+is(
+    $fus_sub->(),
+   "fus: 10",
+   "can delay coderef creation outside of a sub"
+);
+
+my $lex_for_eval = "the eval should see me";
+my $fus_eval_sub = delay sub { eval q{"<$lex_for_eval>"} };
+is(
+    $fus_eval_sub->(),
+   "<$lex_for_eval>",
+   "can delay a coderef that uses eval STRING outside of a sub"
+);
+
+    
+my $fus_const_sub = delay sub () { $fus };
+is(
+    $fus_const_sub->(),
+   10,
+   "can delay a constant coderef creation outside of a sub"
+);
+
+SKIP: {
+    skip("Crashes in 5.8", 3) if $] < 5.010;
+sub {
+    my $fus_sub = delay sub { "fus: $fus" };
+    is(
+        $fus_sub->(),
+        "fus: 10",
+        "can delay coderef creation"
+    );
+
+    my $fus_const_sub = delay sub () { $fus };
+    is(
+        $fus_const_sub->(),
+        10,
+        "can delay a constant coderef creation"
+    );
+
+    my $fus_eval_sub = delay sub { eval q{"<$lex_for_eval>"} };
+    is(
+        $fus_eval_sub->(),
+        "<$lex_for_eval>",
+        "can delay a coderef that uses eval STRING inside of a sub"
+    );
+}->();
+}
+
+
+my $s = 'Fus';
+sub {
+    delay $s .= $_[0];
+}->(' Ro Dah');
+is($s, "Fus Ro Dah", 'delay $s .= ... works');
+
+{
+my $w = '';
+local $SIG{__WARN__} = sub { $w .= shift };
+$s = 'Tiid';
+sub {
+    local *_ = [" Klo", " Ul"];
+    delay $s .= $_[0];
+    delay $s .= $_[1];
+}->('');
+is($s, "Tiid Klo Ul", 'local *_ = [...]; delay $s .= $_[0] works');
+    is($w, '', "..with no warnings");
+}
+
+{
+    my $w = '';
+    local $SIG{__WARN__} = sub { $w .= shift };
+    $s = 'unchanged';
+    sub {
+        local *_ = "test";
+        delay $s .= $_[0];
+    }->(' ro dah');
+
+    is(
+        $s,
+       'unchanged',
+       'local *_ = "scalar"; delay $s .= $_[0] works'
+    );
+    like(
+        $w,
+         qr/Use of uninitialized value in concatenation/,
+         "...and it gives the right warning"
+    );
+    
+    SKIP: {
+        skip("Not implemented yet", 2);
+        sub {
+            local *_ = "test";
+            delay push @_, 'modifying @_';
+            ok(defined *_{ARRAY});
+            is_deeply(\@_, ['modifying @_']);
+        }->(' ro dah');
+    }
 }
 
 done_testing;

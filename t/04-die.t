@@ -2,14 +2,14 @@ use strict;
 use warnings;
 
 use Carp qw(carp croak confess);
-use Test::More tests => 19;
+use Test::More tests => 25;
 
+use Params::Lazy lazy_death => '^;$';
 sub lazy_death {
     eval { force($_[0]) };
     return $@ unless $_[1];
     force($_[0]);
 };
-use Params::Lazy lazy_death => '^;$';
 
 my $w = '';
 local $SIG{__WARN__} = sub { $w .= shift };
@@ -20,7 +20,6 @@ sub dies      { die "die in sub"           }
 sub carps     { carp("carp in sub")       }
 sub croaks    { croak("croak in sub")     }
 sub confesses { confess("confess in sub") }
-
 
 like lazy_death(die("bare die")), qr/bare die/, "lazy_death die()";
 
@@ -109,7 +108,9 @@ sub call_lazy_death {
          "eval { lazy_death(confess()) }";
 }
 
+# Do this twice; in some dev versions this caused segfaults,
+# e.g. when cx->blk_sub.argarray was missing the REFCNT++
+call_lazy_death();
 call_lazy_death();
 
 pass("Survived this far");
-

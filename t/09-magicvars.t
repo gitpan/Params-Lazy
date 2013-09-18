@@ -3,17 +3,18 @@ use warnings;
 
 use Test::More;
 
+no Params::Lazy 'caller_args';
+use Params::Lazy lazy_test      => '^$;$',
+                 lazy_return    => '^',
+                 lazy_ampforce  => '^',
+                 lazy_gotoforce => '^';
+
 sub lazy_test {
     is(force($_[0]), $_[1], $_[2]);
 }
 sub lazy_return { return shift }
 sub lazy_ampforce { &force }
 sub lazy_gotoforce { goto &force }
-
-use Params::Lazy lazy_test      => '^$;$',
-                 lazy_return    => '^',
-                 lazy_ampforce  => '^',
-                 lazy_gotoforce => '^';
 
 sub {
     lazy_test
@@ -32,16 +33,29 @@ BEGIN {
     if ( $] >= 5.014 ) {
         lazy_test ${^GLOBAL_PHASE},
               ${^GLOBAL_PHASE},
-              'BEGIN{lazy_return(${^GLOBAL_PHASE})}';
-    }
+              'BEGIN{lazy_test(${^GLOBAL_PHASE})}';
     
-=begin All kinds of screwy behavior
-    my $when = lazy_return ${^GLOBAL_PHASE};
-=cut
+        my $when = lazy_return ${^GLOBAL_PHASE};
+        is(
+            force $when,
+            ${^GLOBAL_PHASE},
+           'BEGIN{lazy_return(${^GLOBAL_PHASE})}'
+        );
+    }
 }
 
-# Crashes on 5.10.1-5.12.5
-if ( $] < 5.010001 || $] >= 5.014 ) {
+if ( $] >= 5.016 ) {
+    no  if $] <  5.016, strict  => 'subs';
+    use if $] >= 5.016, feature => 'current_sub';
+    sub {
+        lazy_test __SUB__,
+            __SUB__,
+            'sub{lazy_test(__SUB__)}';
+    }->();
+}
+
+# Crashes on 5.8.9-5.12.5
+if ( $] >= 5.014 ) {
     "a" =~ /(.)/;
     my $lazy = lazy_return "foo" =~ /(foo)(?{is($^N, "foo", "the regex matched")})/;
     force($lazy);

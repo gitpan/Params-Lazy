@@ -1,4 +1,6 @@
+use warnings;
 no if $] >= 5.018, warnings => "experimental::lexical_topic";
+use 5.010;
 
 {
     my $_ = "lexical"; 
@@ -38,24 +40,48 @@ $d = do {
         "eval 'force(delayed arg that references a lexical)'"
     );
     
-=begin Segfaults, Not actually supported, pathological
     for my $sub (
-        sub { force($d) },
-        sub { my    $_ = "_66_"; force($d) },
-        sub { state $_ = "_77_"; force($d) },
-        sub { our   $_ = "_88_"; force($d) },
-        sub { our $_; local $_ = "_99_"; force($d) },
+        sub { force($f) },
+        sub { my    $_ = "_66_"; force($f) },
+        sub { state $_ = "_77_"; force($f) },
+        sub { our   $_ = "_88_"; force($f) },
+        sub { our $_; local $_ = "_99_"; force($f) },
         )
     {
         my $w = "";
         local $SIG{__WARN__} = sub { $w .= shift };
 
-        $sub->();
-        like(
-            $w,
-            qr/Use of uninitialized value \$_/,
+        is(
+            $sub->(),
+            "<_55_>",
             ""
         );
     }
-=cut
+    # If we return this, ctx->comppad eventually point to a freed pad,
+    # and once the magic is freed, it'll try using that and segfault
+    #$f
 };
+
+=begin Unsupported, occasional pad corruption
+for my $sub (
+    sub { force($d) },
+    sub { my    $_ = "_66_"; force($d) },
+    sub { state $_ = "_77_"; force($d) },
+    sub { our   $_ = "_88_"; force($d) },
+    sub { our $_; local $_ = "_99_"; force($d) },
+    )
+{
+    my $w = "";
+    local $SIG{__WARN__} = sub { $w .= shift };
+
+    my $ret = $sub->();
+    like(
+        $w,
+        qr/Use of uninitialized value \$_/,
+        "XXX force in another scope referencing a lexical"
+    );
+    is($ret, "<>");
+}
+=cut
+
+1;

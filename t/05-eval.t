@@ -1,7 +1,13 @@
 use strict;
 use warnings;
 
-use Test::More tests => $] >= 5.016 ? 20 : 19;
+use Test::More;
+
+if ( $] < 5.010 && ($ENV{PERL_DESTRUCT_LEVEL} || 0) > 0 ) {
+    plan skip_all => "Segfaults during global destruction on 5.8 if PERL_DESTRUCT_LEVEL is set";
+}
+
+plan tests => $] >= 5.016 ? 20 : 19;
 
 use Params::Lazy; # import the custom-op force()
 

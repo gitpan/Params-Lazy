@@ -17,8 +17,12 @@ t/08-evil.t
 t/09-magicvars.t
 t/10-prototypes.t
 t/11-all.t
+t/12-caller-args.t
+t/13-toggle.t
+t/14-threads.t
 t/lib/lexical_topic_tests.pm
 t/author.t
 ignore.txt
 MANIFEST.SKIP
-META.yml                                 Module meta-data (added by MakeMaker)
+META.yml                                 Module YAML meta-data (added by MakeMaker)
+META.json                                Module JSON meta-data (added by MakeMaker)

@@ -3,6 +3,9 @@ use warnings;
 
 use Test::More;
 
+use Params::Lazy fakemap  => "^@",
+                 fakegrep => "^@";
+
 sub fakemap {
    my $code = shift;
    my @ret;
@@ -18,9 +21,6 @@ sub fakegrep {
    }
    return @ret;
 }
-
-use Params::Lazy fakemap  => "^@",
-                 fakegrep => "^@";
 
 my @results = fakemap "<$_>", 1..10;
 

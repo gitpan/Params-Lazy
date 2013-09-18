@@ -1,29 +1,28 @@
---- #YAML:1.0
-name:               Params-Lazy
-version:            0.003
-abstract:           Transparent lazy arguments for subroutines.
+---
+abstract: 'Transparent lazy arguments for subroutines.'
 author:
-    - Brian Fraser <fraserbn@gmail.com>
-license:            Artistic_2_0
-distribution_type:  module
-configure_requires:
-    Devel::CallChecker:   0
-    ExtUtils::MakeMaker:  0
-    IO::File:             0
+  - 'Brian Fraser <fraserbn@gmail.com>'
 build_requires:
-    Test::More:  0.98
-requires:
-    Devel::CallChecker:  0
-    perl:                5.008008
-    strict:              0
-    Test::More:          0.98
-    warnings:            0
-    XSLoader:            0
-no_index:
-    directory:
-        - t
-        - inc
-generated_by:       ExtUtils::MakeMaker version 6.55_02
+  Test::More: 0.98
+configure_requires:
+  Devel::CallChecker: 0
+  ExtUtils::MakeMaker: 0
+  IO::File: 0
+dynamic_config: 1
+generated_by: 'ExtUtils::MakeMaker version 6.66, CPAN::Meta::Converter version 2.120921'
+license: unknown
 meta-spec:
-    url:      http://module-build.sourceforge.net/META-spec-v1.4.html
-    version:  1.4
+  url: http://module-build.sourceforge.net/META-spec-v1.4.html
+  version: 1.4
+name: Params-Lazy
+no_index:
+  directory:
+    - t
+    - inc
+requires:
+  Devel::CallChecker: 0
+  XSLoader: 0
+  perl: 5.008008
+  strict: 0
+  warnings: 0
+version: 0.004

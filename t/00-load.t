@@ -10,4 +10,4 @@ BEGIN {
     use_ok( 'Params::Lazy' ) || print "Bail out!\n";
 }
 
-diag( "Testing Params::Lazy $Params::Lazy::VERSION, Perl $], $^X" );
+diag( "Testing Params::Lazy $Params::Lazy::VERSION, Perl $], $^X" ) unless caller;
