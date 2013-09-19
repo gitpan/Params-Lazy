@@ -16,7 +16,7 @@ our @ISA       = qw(Exporter);
 our @EXPORT    = "force";
 our @EXPORT_OK = "force";
 
-our $VERSION = '0.004';
+our $VERSION = '0.005';
 
 my $hint_key = "Params::Lazy/no_caller_args";
 
@@ -93,7 +93,7 @@ Params::Lazy - Transparent lazy arguments for subroutines.
 
 =head1 VERSION
 
-Version 0.004
+Version 0.005
 
 =head1 SYNOPSIS
 
@@ -220,14 +220,7 @@ on Perls 5.18 and newer.
 
 =item *
 
-In 5.16 and older, using C<delay caller> outside of a sub will not
-get the proper values.  Unfortunately for those versions, 
-this is a tradeoff to implement C<delay sub { $lex }>, so
-it's unlikely to be fixed.
-
-=item *
-
-As of version 0.004, the 'caller arguments' feature doesn't work
+As of version 0.005, the 'caller arguments' feature doesn't work
 if you're passing a delayed argument to another delayed function:
 
     use Params::Lazy qw( delay_1 ^$ delay_2 ^$ );
@@ -275,7 +268,7 @@ This program is free software; you may redistribute it and/or modify it under th
 
 =head1 ACKNOWLEDGEMENTS
 
-To Scala for the inspiration, to #p5p in general for holding my hand as I
+To Scala for the inspiration, to p5p in general for holding my hand as I
 stumbled through the callchecker, and to Zefram for L<Devel::CallChecker>
 and spotting a leak.
 

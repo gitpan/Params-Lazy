@@ -2,7 +2,7 @@ use strict;
 use warnings;
 
 use Carp qw(carp croak confess);
-use Test::More tests => 25;
+use Test::More tests => 35;
 
 use Params::Lazy lazy_death => '^;$';
 sub lazy_death {
@@ -20,6 +20,7 @@ sub dies      { die "die in sub"           }
 sub carps     { carp("carp in sub")       }
 sub croaks    { croak("croak in sub")     }
 sub confesses { confess("confess in sub") }
+sub xs_croaks { force(1) }
 
 like lazy_death(die("bare die")), qr/bare die/, "lazy_death die()";
 
@@ -49,6 +50,11 @@ like
     qr/bare confess/,
     "lazy_death confess()";
 
+my $xs_croak_re = qr/\Qforce() requires a delayed argument/;
+like
+    lazy_death(force(1)),
+    $xs_croak_re,
+    "lazy_death force()";
 
 like
     lazy_death(dies()),
@@ -81,6 +87,14 @@ like
     qr/confess in sub/,
     "lazy_death(confesses())";
 
+like
+    lazy_death(xs_croaks()),
+    $xs_croak_re,
+    "xs_croaks()";
+
+use Params::Lazy lazy_run => '^';
+sub lazy_run { force shift }
+
 sub call_lazy_death {
     eval { lazy_death die("bare death"), 1 };
     like $@,
@@ -106,6 +120,30 @@ sub call_lazy_death {
     like $@,
          qr/confess in sub.*call_lazy_death/s,
          "eval { lazy_death(confess()) }";
+         
+    eval { lazy_death xs_croaks(),       1 };
+    like $@,
+         $xs_croak_re,
+         "eval { lazy_death xs_croaks() }";
+
+    eval { lazy_run(lazy_run(lazy_run force(1))) };
+    like $@,
+        $xs_croak_re,
+        "lazy_run(lazy_run(lazy_run force(1))) gives the proper exception";         
+         
+    SKIP: {
+        skip("Exception handling doesn't quite work on 5.8", 2);
+    my $lex = 10;
+    my $ret = lazy_run(lazy_run(lazy_run do {
+        eval { force(1) };
+        like $@,
+         qr/\Qforce() requires a delayed argument/,
+         "lazy_run(lazy_run(lazy_run do { eval {...} })) gives the proper exception";
+         
+        sub { "lex: $lex" }->();
+    }));
+    is($ret, "lex: 10", "..and got the right return value");
+    }
 }
 
 # Do this twice; in some dev versions this caused segfaults,

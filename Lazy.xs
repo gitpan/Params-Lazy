@@ -70,6 +70,38 @@ THX_cxinc(pTHX)
 }
 #endif
 
+#ifndef find_runcv
+/* Perl 5.8.8 */
+#define find_runcv(d) THX_find_runcv(aTHX_ d)
+/* Taken from pp_ctl.c in 5.8.8 */
+CV*
+THX_find_runcv(pTHX_ U32 *db_seqp)
+{
+    PERL_SI      *si;
+
+    if (db_seqp)
+        *db_seqp = PL_curcop->cop_seq;
+    for (si = PL_curstackinfo; si; si = si->si_prev) {
+        I32 ix;
+        for (ix = si->si_cxix; ix >= 0; ix--) {
+            const PERL_CONTEXT *cx = &(si->si_cxstack[ix]);
+            if (CxTYPE(cx) == CXt_SUB || CxTYPE(cx) == CXt_FORMAT) {
+                CV * const cv = cx->blk_sub.cv;
+                /* skip DB:: code */
+                if (db_seqp && PL_debstash && CvSTASH(cv) == PL_debstash) {
+                    *db_seqp = cx->blk_oldcop->cop_seq;
+                    continue;
+                }
+                return cv;
+            }
+            else if (CxTYPE(cx) == CXt_EVAL && !CxTRYBLOCK(cx))
+                return PL_compcv;
+        }
+    }
+    return PL_main_cv;
+}
+#endif /* find_runcv */
+
 #ifndef LINKLIST
 #    define LINKLIST(o) ((o)->op_next ? (o)->op_next : op_linklist((OP*)o))
 #  ifndef op_linklist
@@ -126,9 +158,7 @@ THX_op_contextualize(pTHX_ OP *o, I32 context)
 }
 #endif
 
-#ifdef Perl_finalize_optree
-#  define finalize_optree(o) Perl_finalize_optree(aTHX_ o)
-#else
+#ifndef finalize_optree
 #  define finalize_optree(o) THX_finalize_optree(aTHX_ o)
 #  define finalize_op(o)     THX_finalize_op(aTHX_ o)
 
@@ -297,7 +327,10 @@ START_MY_CXT
 
 typedef struct {
  OP *delayed;
+#ifdef USE_ITHREADS
  AV *comppad;
+ AV *comppad_name;
+#endif
 } delay_ctx;
 
 STATIC int magic_free(pTHX_ SV *sv, MAGIC *mg)
@@ -320,6 +353,8 @@ STATIC int magic_free(pTHX_ SV *sv, MAGIC *mg)
     /* XXX TODO this works. It probably shouldn't. */
     ENTER;
     SAVECOMPPAD();
+    SAVESPTR(PL_comppad_name);
+    PL_comppad_name = ctx->comppad_name;
     PL_comppad = ctx->comppad;
     PL_curpad  = AvARRAY(PL_comppad);
 #endif
@@ -405,6 +440,15 @@ S_do_force(pTHX_ SV* sv, bool use_caller_args)
     /* PL_curstack and PL_stack_sp in the delayed OPs */
     AV *delayed_curstack = NULL;
     SV **delayed_sp = NULL;
+#ifndef CXp_SUB_RE
+     /* XXX We play these CvDEPTH games in <5.18 to deal
+      * with XS code calling Perl_croak() directly,
+      * because the croak won't see the CXt_SUB of the
+      * delayer's cx, and thus won't decrease its CvDEPTH
+      */
+    CV *runcv      = find_runcv(NULL);
+    I32 orig_depth = CvDEPTH(runcv);
+#endif
 
     if ( SvROK(sv) && SvMAGICAL(SvRV(sv)) ) {
         ctx  = (void *)SvMAGIC(SvRV(sv))->mg_ptr;
@@ -435,12 +479,13 @@ S_do_force(pTHX_ SV* sv, bool use_caller_args)
      */
     delayer_cx->cx_type |= CXp_SUB_RE;
 #else
-    /* Tradeoff. Makes delay sub {$lexical} work, but
-     * breaks top-level delayed caller.
-     * We MUST restore this manually for a couple of operations
-     * that do a JMPENV, like exit, die, or goto, which means
-     * that for older perls, we can't use CALLRUNOPS, but instead
-     * must do the runloop manually.
+    /* Tradeoff for older perls; makes
+     * 'delay sub {$lexical}' work, but means we have to do
+     * the runloop ourselves so we can manually restore the
+     * value in a case-by-case basis to make a couple of
+     * operations work properly; Those
+     * include top-level caller(), and anything that
+     * does a JMPENV, like exit, die, or goto.
      */
     delayer_cx->cx_type &= ~CXt_SUB;
 #endif
@@ -458,7 +503,8 @@ S_do_force(pTHX_ SV* sv, bool use_caller_args)
         PL_comppad = MY_CXT.orig_comppad;
     }
     else {
-        croak("Foobar");
+        /* Untested, shouldn't happen? */
+        Perl_croak(aTHX_ "Cannot restore the context for the delayed expression");
     }
 
     PL_curpad  = AvARRAY(PL_comppad);
@@ -513,7 +559,7 @@ S_do_force(pTHX_ SV* sv, bool use_caller_args)
 #ifdef CXp_SUB_RE
             CALLRUNOPS(aTHX);
 #else
-            /* See comments in the previous CXp_SUB_RE to see why
+            /* See comments in the previous CXp_SUB_RE ifdef to see why
              * we do this.
              */
             while ((PL_op = PL_op->op_ppaddr(aTHX))) {
@@ -523,7 +569,22 @@ S_do_force(pTHX_ SV* sv, bool use_caller_args)
                  case OP_DIE:
                  case OP_EXIT:
                  case OP_EXEC:
+                 case OP_CALLER:
+                    /* These ops need to know that the
+                     * delayer is a subroutine, so restore
+                     * cx_type.
+                     */
                     delayer_cx->cx_type |= CXt_SUB;
+                    break;
+                 default:
+                    /* Can't use SAVEINT() for the above, as
+                     * caller() doesn't create a scope
+                     * to automatically restore the value,
+                     * so instead we manually unset this
+                     * for every other op.
+                     */
+                    delayer_cx->cx_type &= ~CXt_SUB;
+                    break;
                 }
             }
 #endif
@@ -557,6 +618,14 @@ S_do_force(pTHX_ SV* sv, bool use_caller_args)
                 LEAVE;
                 break;
             }
+#ifndef CXp_SUB_RE
+            /* Something called Perl_croak() */
+            /* XXX this likely needs a more precise test */
+            if (   orig_depth > 0
+                && orig_depth == CvDEPTH(runcv)) {
+                CvDEPTH(runcv)--;
+            }
+#endif
             /* Fallthrough */
         default:
             /* Default behavior */
@@ -622,7 +691,7 @@ S_do_force(pTHX_ SV* sv, bool use_caller_args)
 
 /* pp_delay gets called *before* the entersub of a function with
  * delayed arguments, so it has the "original" @_ in scope.
- * This kludge allows us do DTRT for a localized @_:
+ * This kludge allows us DTRT for a localized @_:
  *     local @_ = qw(foo bar); say delay shift @_;
  * will output "foo" and modify the correct @_.  Similarly,
  *     local *_ = \@foo; say delay shift;
@@ -761,8 +830,11 @@ replace_with_delayed(pTHX_ OP* aop) {
     (void)OpREFCNT_set(ctx->delayed, 1);
     OP_REFCNT_UNLOCK;
     
-    ctx->comppad = PL_comppad;
-    
+#ifdef USE_ITHREADS
+    ctx->comppad      = PL_comppad;
+    ctx->comppad_name = PL_comppad_name;
+#endif
+
     /* Magicalize the scalar, */
     mg = sv_magicext(magic_sv, (SV*)NULL, PERL_MAGIC_ext, &vtbl, (const char *)ctx, 0);
 
@@ -796,6 +868,12 @@ S_ck_force(pTHX_ OP *entersubop, GV *namegv, SV *cv)
     prev->op_sibling = first->op_sibling;
     first->op_flags &= ~OPf_MOD;
     aop = aop->op_sibling;
+    
+    if ( !aop ) {
+        /* Not enough arguments for force() */
+        return entersubop;
+    }
+    
     /* aop now points to the cvop */
     prev->op_sibling = aop->op_sibling;
     aop->op_sibling = NULL;

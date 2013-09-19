@@ -334,6 +334,21 @@ sub {
         "<$lex_for_eval>",
         "can delay a coderef that uses eval STRING inside of a sub"
     );
+    
+    $fus_sub = delay do { eval {die}; sub { "fus: $fus" } };
+    is(
+        $fus_sub->(),
+        "fus: 10",
+        'do { eval {die}; sub { $lexical } } works'
+    );
+
+    $fus_sub = delay do { () = caller; sub { "fus: $fus" } };
+    is(
+        $fus_sub->(),
+        "fus: 10",
+        'do { () = caller; sub { $lexical } } works'
+    );
+
 }->();
 }
 
